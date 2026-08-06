@@ -1,0 +1,64 @@
+# machine-guard :: integrity watch list
+#
+# Files and directories whose contents should essentially NEVER change without
+# you knowing. These are hashed at baseline time and diffed on every scan.
+#
+# This is the variant-agnostic core: it catches a payload with no known
+# signature, because it does not look for malware -- it looks for change.
+#
+# Syntax:
+#   FILE <path>        hash this exact file
+#   GLOB <pattern>     hash every file matching this shell glob
+#   DIR  <path>        hash every file directly inside (non-recursive)
+#   TREE <path>        hash every file recursively (use sparingly -- slow)
+#
+# Lines starting with # are comments. ~ is expanded.
+
+# ---------------------------------------------------------------------------
+# Package-manager entry points.
+# This is where the 2026-06-26 npm implant lived. cli.js is ~407 bytes and
+# 12 lines in a genuine install; the implant made it 70,483 bytes.
+# ---------------------------------------------------------------------------
+GLOB ~/.nvm/versions/node/*/lib/node_modules/npm/lib/cli.js
+GLOB ~/.nvm/versions/node/*/lib/node_modules/npm/bin/npm-cli.js
+GLOB ~/.nvm/versions/node/*/lib/node_modules/npm/bin/npx-cli.js
+GLOB ~/.nvm/versions/node/*/lib/node_modules/corepack/dist/corepack.js
+GLOB ~/.nvm/versions/node/*/bin/npm
+GLOB ~/.nvm/versions/node/*/bin/npx
+GLOB ~/.local/share/mise/installs/node/*/lib/node_modules/npm/lib/cli.js
+GLOB ~/.asdf/installs/nodejs/*/lib/node_modules/npm/lib/cli.js
+GLOB ~/.volta/tools/image/node/*/lib/node_modules/npm/lib/cli.js
+FILE /usr/local/lib/node_modules/npm/lib/cli.js
+FILE /opt/homebrew/lib/node_modules/npm/lib/cli.js
+
+# ---------------------------------------------------------------------------
+# Persistence surfaces.
+# com.clipboard-bot.plist appeared here on 2026-06-26 and would have been
+# caught the same day by a simple "a new file appeared" check.
+# ---------------------------------------------------------------------------
+DIR ~/Library/LaunchAgents
+DIR /Library/LaunchAgents
+DIR /Library/LaunchDaemons
+
+# ---------------------------------------------------------------------------
+# Credentials and access.
+# ---------------------------------------------------------------------------
+DIR ~/.ssh
+FILE ~/.gitconfig
+FILE ~/.npmrc
+FILE ~/.config/gh/hosts.yml
+
+# ---------------------------------------------------------------------------
+# Shell startup -- a classic place to hide a loader.
+# ---------------------------------------------------------------------------
+FILE ~/.zshrc
+FILE ~/.zshenv
+FILE ~/.zprofile
+FILE ~/.bashrc
+FILE ~/.bash_profile
+FILE ~/.profile
+
+# ---------------------------------------------------------------------------
+# Git-level hijack points (core.sshCommand, url.*.insteadOf redirects).
+# ---------------------------------------------------------------------------
+FILE /Library/Developer/CommandLineTools/usr/share/git-core/gitconfig

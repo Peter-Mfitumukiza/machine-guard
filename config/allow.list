@@ -1,0 +1,43 @@
+# machine-guard :: allow list
+#
+# Extended-regex patterns matched against absolute paths. A finding whose path
+# matches any line here is suppressed from signature/technique checks.
+#
+# Rationale: security tooling and incident documentation MUST contain the
+# indicator strings in order to detect or describe them. A scanner that flags
+# scanners is the single fastest way to train a team to ignore it -- which is
+# exactly how Brain-PowerStation's malware-scan CI ended up failing on its own
+# .husky/pre-push guard during a live incident.
+#
+# This list does NOT apply to:
+#   - the integrity baseline (a change is a change, always reported)
+#   - quarantine executable-bit checks (never suppressed)
+# Keep it as tight as possible.
+
+# This tool itself
+/Users/peter/Documents/machine-guard/
+
+# Claude skills: detection scripts, IoC catalogs, templates
+/\.claude/skills/
+/\.claude/projects/.*/memory/
+
+# Defensive tooling inside repos
+/\.husky/
+/\.github/workflows/
+/scripts/security/
+/\.bin/local-security-guard\.sh$
+/malware-scan\.(sh|yml)$
+/infection-check\.sh$
+/check-machine\.sh$
+
+# Incident documentation
+/docs/security/
+/2026-q2-incident/
+\.(md|txt|rst)$
+
+# Package manager internals with legitimately long minified lines.
+# NOTE: this suppresses the *long line* technique check only. npm's own
+# entry points are covered far more strictly by the integrity baseline.
+/node_modules/.*/dist/
+/node_modules/undici/lib/llhttp/
+/node_modules/(lru-cache|glob|tar|diff|qs|ipaddr\.js)/
