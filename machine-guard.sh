@@ -246,7 +246,7 @@ check_toolchain() {
 check_runtime() {
   sec "3. Runtime  (a live process is an active compromise, not a risk)"
   local ps_out; ps_out="$(ps -Ao pid,ppid,command 2>/dev/null)"
-  local before; before="$(count_of CRITICAL)"
+  local before before_w; before="$(count_of CRITICAL)"; before_w="$(count_of WARN)"
 
   # 3a/3b. Inline-eval processes: payload markers, oversized argv, or spawned
   # by a package manager (the npm-implant relationship).
@@ -259,37 +259,100 @@ check_runtime() {
   # Our own ancestry is skipped for the same reason.
   local selfline; selfline="$(self_ancestry)"
 
-  printf '%s\n' "$ps_out" | awk 'NR>1' | while IFS= read -r l; do
-    local pid ppid comm args pcmd len
-    pid=$(printf '%s' "$l" | awk '{print $1}')
-    ppid=$(printf '%s' "$l" | awk '{print $2}')
+  # Shell BLOCKLIST, not an interpreter allowlist.
+  #
+  # Allowlisting interpreter names ("is comm == node?") is trivially defeated:
+  # `cp $(which node) /tmp/systemd-helper` and the check goes blind. Measured
+  # -- that evasion beat the previous version of this function. Blocking shells
+  # instead keeps out the one real false positive (a shell whose argv merely
+  # *contains* a node command, including the shell running this scan) while
+  # still seeing a renamed interpreter.
+  printf '%s\n' "$ps_out" | awk 'NR>1{print $1}' | while IFS= read -r pid; do
     case " $selfline " in *" $pid "*) continue ;; esac
 
-    comm=$(ps -p "$pid" -o comm= 2>/dev/null); comm="${comm##*/}"
-    case "$comm" in
-      node|nodejs|python|python2|python3|python3.*|deno|bun) ;;
-      *) continue ;;
+    local commfull commbase args len ppid pcmd
+    commfull=$(ps -p "$pid" -o comm= 2>/dev/null)
+    [ -z "$commfull" ] && continue
+    commbase="${commfull##*/}"
+    case "$commbase" in
+      sh|bash|zsh|dash|ksh|fish|tcsh|csh|login|ps|grep|awk|sed) continue ;;
     esac
 
     args=$(ps -p "$pid" -o command= 2>/dev/null)
-    # Only inline-eval invocations are interesting: -e / --eval / -c
-    printf '%s' "$args" | grep -qE ' -e |--eval| -c ' || continue
+    [ -z "$args" ] && continue
     len=${#args}
+    ppid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ')
     pcmd=$(ps -p "$ppid" -o command= 2>/dev/null | cut -c1-70)
 
-    if printf '%s' "$args" | grep -qE "global\[|atob\(|_\\\$_|child_process|createRequire"; then
-      crit "inline-eval $comm process carrying payload markers (pid $pid)"
-      note "$(printf '%s' "$args" | cut -c1-130)"
-    elif [ "$len" -gt 2000 ]; then
-      crit "inline-eval $comm with ${len}-char argv (pid $pid) -- stage-2 shape"
-      note "$(printf '%s' "$args" | cut -c1-130)"
+    # (a) Inline evaluation: -e / --eval / -c
+    if printf '%s' "$args" | grep -qE ' -e |--eval|[[:space:]]-c '; then
+      if printf '%s' "$args" | grep -qE "global\[|atob\(|_\\\$_|child_process|createRequire|eval\("; then
+        crit "inline-eval process carrying payload markers (pid $pid, $commbase)"
+        note "$(printf '%s' "$args" | cut -c1-130)"
+      elif [ "$len" -gt 2000 ]; then
+        crit "inline-eval process with ${len}-char argv (pid $pid, $commbase) -- stage-2 shape"
+        note "$(printf '%s' "$args" | cut -c1-130)"
+      fi
+      case "$pcmd" in
+        *"npm exec"*|*"npm ls"*|*npx*|*pnpm*|*yarn*)
+          crit "inline-eval spawned by a package manager (pid $pid, parent $ppid)"
+          note "parent: $pcmd"
+          note "this is the npm-implant parent/child relationship exactly" ;;
+      esac
     fi
-    case "$pcmd" in
-      *"npm exec"*|*"npm ls"*|*npx*|*pnpm*|*yarn*)
-        crit "inline-eval spawned by a package manager (pid $pid, parent $ppid)"
-        note "parent: $pcmd"
-        note "this is the npm-implant parent/child relationship exactly" ;;
+
+    # (b) Preload injection: -r / --require / --import pointing somewhere odd.
+    #     Legitimate preloads (ts-node/register, tsx, dotenv) live in node_modules.
+    if printf '%s' "$args" | grep -qE '(^| )(-r|--require|--import)[= ]'; then
+      local pre
+      pre=$(printf '%s' "$args" | grep -oE '(-r|--require|--import)[= ][^ ]+' | head -1 | sed -E 's/^(-r|--require|--import)[= ]//')
+      case "$pre" in
+        */node_modules/*|"") ;;
+        /tmp/*|/var/tmp/*|*/.*/*|*quarantine*)
+          crit "preload injection into $commbase (pid $pid): $pre" ;;
+      esac
+    fi
+
+    # (c) Executable running from a location code should not live in.
+    case "$commfull" in
+      /tmp/*|/var/tmp/*|*/quarantine*|*/.cache/*|*/.local/tmp/*)
+        warn "process running from an unusual location (pid $pid): $commfull" ;;
     esac
+
+    # (e) Script argument that no longer exists on disk.
+    #     Classic drop-execute-unlink. lsof shows nothing useful (node reads the
+    #     file at startup and closes the fd), but argv is fixed at exec time, so
+    #     the path is still visible long after the file is gone.
+    case "$commbase" in
+      node|nodejs|deno|bun|python|python2|python3|python3.*|ruby|perl)
+        local sarg
+        sarg=$(printf '%s' "$args" | awk '{for(i=2;i<=NF;i++){if($i ~ /^-/) continue; print $i; exit}}')
+        if [ -n "$sarg" ]; then
+          case "$sarg" in
+            /*|./*|../*)
+              if [ ! -e "$sarg" ]; then
+                crit "process running a script that no longer exists on disk (pid $pid)"
+                note "$commbase $sarg  -- drop-execute-unlink pattern"
+              fi ;;
+          esac
+        else
+          # No script argument and no eval flag => reading code from stdin,
+          # or an interactive REPL. Unusual for a long-lived background process.
+          printf '%s' "$args" | grep -qE ' -e |--eval|[[:space:]]-c |-i|--interactive' || \
+            warn "interpreter running with no script argument (pid $pid, $commbase) -- stdin/REPL"
+        fi ;;
+    esac
+
+    # (d) NODE_OPTIONS injection -- a quiet way to preload code into every
+    #     node process without touching any command line.
+    local envs
+    envs=$(ps -E -p "$pid" -o command= 2>/dev/null | tr ' ' '\n' | grep -E '^NODE_OPTIONS=' | head -1)
+    if [ -n "$envs" ]; then
+      case "$envs" in
+        *--require*|*--import*|*-r\ *)
+          crit "NODE_OPTIONS preload injection (pid $pid): $envs" ;;
+      esac
+    fi
   done
 
   # 3c. Clipboard / seed-phrase stealer family.
@@ -326,7 +389,7 @@ check_runtime() {
     info "no launchd baseline yet (captured on next 'baseline' run)"
   fi
 
-  [ "$(count_of CRITICAL)" = "$before" ] && line "no suspicious processes or connections"
+  [ "$(count_of CRITICAL)" = "$before" ] && [ "$(count_of WARN)" = "$before_w" ] && line "no suspicious processes or connections"
   return 0
 }
 
