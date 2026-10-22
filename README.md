@@ -41,6 +41,7 @@ real malware. But an executable bit anywhere under a quarantine root is
 ./machine-guard.sh quick       # toolchain hash check only (milliseconds)
 ./machine-guard.sh status      # baseline age, last result
 ./machine-guard.sh harden-quarantine   # strip exec bit from quarantine roots
+./machine-guard.sh selftest    # prove the structural checks fire (synthetic fixture, temp dir)
 ```
 
 Exit codes: `0` clean · `1` warnings · `2` CRITICAL
@@ -78,7 +79,20 @@ One daily job is the wrong shape. The npm implant re-stole credentials on
    processes, live connections to known C2, new persistent launchd labels.
 4. **Quarantine hygiene** — executable bits under any quarantine root.
 5. **Carrier technique** — build-config files with pathologically long lines.
-6. **Known signatures** — scoped, last, and least trusted.
+6. **Editor auto-run & disguised payloads** — `.vscode` tasks that run on folder
+   open (hidden, or launching an interpreter), committed
+   `task.allowAutomaticTasks`, code pushed off-screen by a 200+ blank run in a
+   file of *any* extension, font files with a text body, and `node <file>` in
+   `package.json`/`tasks.json` aimed at an asset or a padded file. Added after
+   the 2026-10 wave (PR #37 on `jdufitum/user-vendor-microservice`), which
+   matched none of the string signatures and ran the moment the folder opened.
+7. **Known signatures** — scoped, last, and least trusted.
+
+`selftest` builds a synthetic replica of that attack's *shape* — every payload
+is an inert comment, indicator strings are assembled at runtime — plus a clean
+control project, in a `mktemp` directory that is removed on exit. It fails if
+any check stops firing or the control raises a finding. Run it after editing
+any check.
 
 ## Tuning
 
@@ -102,7 +116,7 @@ one whose blind spots you do.
   is invisible to §3. The shell/pre-push layers narrow this window; they don't
   close it.
 - **Signature section is inherently reactive.** It will not catch a new variant.
-  That is why it is last and least trusted — sections 1, 2, 4 and 5 are the ones
+  That is why it is last and least trusted — sections 1, 2, 4, 5 and 6 are the ones
   designed to survive a rebrand.
 - **Not tamper-proof.** Anything running as your user can modify this tool, its
   manifest, or its LaunchAgent. It raises the cost of a quiet compromise; it does

@@ -1,1 +1,4 @@
 var/
+triage-input/
+config.bat
+node_modules
